@@ -1,0 +1,8 @@
+# Curvine LTP CI — fast gate lane (no syscalls-cv, no fs-cv pressure block).
+# Wired by curvine .github/workflows/e2e-ltp.yml job `ltp-fast`.
+# Baseline wall time on rocky9 FUSE: ~15–25 min (cluster bring-up extra).
+ltp:smoketest
+ltp:fs_perms_simple
+ltp:fcntl-locktests
+ltp:fs_bind
+ltp:fs-cv-smoke

@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""cvtest — test-tool entrypoint for Curvine.
+
+Runs external POSIX suites (LTP now; xfstests/CVbench later) against a
+mounted Curvine filesystem and emits machine-readable JSON results.
+
+Usage:
+    ./cvtest run --suite ltp:fs_perms_simple --mount /curvine-fuse
+    ./cvtest run --suite ltp:fs-cv-smoke     --mount /curvine-fuse \\
+        --ltp /opt/ltp --json out.json
+
+Suite naming: <tool>:<suite-file>
+    ltp:<name>   -> runltp -f <name>; the command file is looked up in
+                    $LTP/runtest, EXCEPT cvtest-curated files under
+                    suites/ltp/runtest/ which are installed there first.
+
+Output JSON contract (compatible with the curvine regression Portal's
+test_summary.json 'ltp_test' block so ltp_test.py parsing carries over):
+    {
+      "tool": "ltp", "suite": "...", "status": "completed|completed_with_failures",
+      "return_code": n, "log_file": "...",
+      "passed_count": n, "failed_count": n, "total_count": n,
+      "success_rate": f, "test_cases": [{"name": "...", "status": "PASSED|FAILED"}]
+    }
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+
+def cmd_run(args):
+    tool, _, suite = args.suite.partition(":")
+    if tool != "ltp":
+        return fail(f"unknown tool '{tool}' (only 'ltp' is wired so far)")
+    if not suite:
+        return fail("--suite must be <tool>:<name>, e.g. ltp:fs_perms_simple")
+    if not os.path.isdir(args.mount):
+        return fail(f"mount point {args.mount} is not a directory")
+    if not os.path.isfile(os.path.join(args.ltp, "runltp")):
+        return fail(f"runltp not found at {args.ltp} "
+                    f"(run tools/ltp/install-ltp.sh {args.ltp})")
+
+    # Curated suites ship in this repo; install them into the LTP tree.
+    curated = REPO_ROOT / "suites" / "ltp" / "runtest" / suite
+    if curated.is_file():
+        dest = Path(args.ltp) / "runtest" / suite
+        if not dest.exists() or not same_file(curated, dest):
+            sudo_install(curated, dest)
+
+    log_file = Path(args.log or tempfile.mktemp(prefix=f"cvtest-ltp-{suite}-", suffix=".log"))
+    cmd = ["./runltp", "-d", args.mount, "-f", f"./{suite}", "-l", str(log_file)]
+    # runltp needs root: it writes $LTP/output, and permission tests
+    # (setuid/setgid) require it. Auto-sudo when not already root.
+    if os.geteuid() != 0 and shutil.which("sudo"):
+        cmd = ["sudo"] + cmd
+    print(f"[cvtest] cd {args.ltp} && {' '.join(cmd)}", flush=True)
+    # FUSE is far slower than local disk; scale LTP's per-test timeout so
+    # data-heavy tests (fsync01, mkfs variants) don't TBROK on load spikes.
+    env = dict(os.environ)
+    env.setdefault("LTP_TIMEOUT_MUL", "4")
+    proc = subprocess.run(cmd, cwd=args.ltp, env=env)
+
+    result = parse_ltp_log(suite, proc.returncode, log_file)
+    payload = {
+        "tool": "ltp",
+        "suite": suite,
+        "status": "completed" if result["failed"] == 0 else "completed_with_failures",
+        "return_code": proc.returncode,
+        "log_file": str(log_file),
+        "passed_count": result["passed"],
+        "failed_count": result["failed"],
+        "total_count": result["passed"] + result["failed"],
+        "success_rate": result["rate"],
+        "test_cases": result["cases"],
+    }
+    if args.json:
+        Path(args.json).write_text(json.dumps(payload, indent=2) + "\n")
+        print(f"[cvtest] JSON written to {args.json}")
+    print(f"[cvtest] {suite}: {result['passed']} passed, {result['failed']} failed "
+          f"({result['rate']:.2f}%) rc={proc.returncode}")
+    return 0 if result["failed"] == 0 and proc.returncode == 0 else 1
+
+
+def same_file(a: Path, b: Path) -> bool:
+    return a.read_text() == b.read_text()
+
+
+def sudo_install(src: Path, dest: Path):
+    """Install curated runtest file into $LTP/runtest.
+
+    Uses sudo only when not already root (CI/container images often lack sudo
+    but run as root).
+    """
+    print(f"[cvtest] installing curated command file {src.name} -> {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if os.geteuid() == 0:
+        shutil.copy2(src, dest)
+        os.chmod(dest, 0o644)
+        return
+    tmp = Path(tempfile.mkstemp()[1])
+    shutil.copy2(src, tmp)
+    subprocess.run(["sudo", "install", "-m", "0644", str(tmp), str(dest)], check=True)
+    tmp.unlink(missing_ok=True)
+
+
+def parse_ltp_log(suite, return_code, log_file):
+    """Parse runltp's flat log: tag=<name> ... stat=<n> (0 = pass).
+
+    Mirrors the parser in curvine-tests/regression/tests/ltp_test.py so
+    both consumers agree on semantics (last run wins on repeated tags).
+    """
+    cases = {}
+    if log_file.exists():
+        lines = log_file.read_text(errors="ignore").splitlines()
+        # Only parse after the LAST startup= line (repeat-run safety).
+        start = 0
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].strip().startswith("startup="):
+                start = i + 1
+                break
+        for line in lines[start:]:
+            tag = re.search(r"tag=([^\s]+)", line)
+            stat = re.search(r"stat=(\d+)", line)
+            if tag and stat:
+                cases[tag.group(1)] = "PASSED" if int(stat.group(1)) == 0 else "FAILED"
+    if not cases:
+        # Fall back to the suite-level return code.
+        cases[suite] = "PASSED" if return_code == 0 else "FAILED"
+    passed = sum(1 for s in cases.values() if s == "PASSED")
+    failed = len(cases) - passed
+    total = passed + failed
+    rate = (passed / total * 100.0) if total else 0.0
+    return {
+        "passed": passed,
+        "failed": failed,
+        "rate": round(rate, 2),
+        "cases": [{"name": k, "status": v} for k, v in sorted(cases.items())],
+    }
+
+
+def fail(msg):
+    print(f"cvtest: {msg}", file=sys.stderr)
+    return 2
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="cvtest", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    run = sub.add_parser("run", help="run a suite against a mount")
+    run.add_argument("--suite", required=True,
+                     help="e.g. ltp:fs_perms_simple, ltp:fs-cv-smoke, ltp:syscalls-cv")
+    run.add_argument("--mount", required=True, help="Curvine FUSE mount point")
+    run.add_argument("--ltp", default="/opt/ltp", help="LTP install prefix (default /opt/ltp)")
+    run.add_argument("--json", help="write results JSON here")
+    run.add_argument("--log", help="runltp flat log path (default: tmpfile)")
+    run.set_defaults(func=cmd_run)
+
+    args = ap.parse_args()
+    sys.exit(args.func(args))
+
+
+if __name__ == "__main__":
+    main()

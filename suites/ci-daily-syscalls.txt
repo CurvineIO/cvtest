@@ -1,0 +1,5 @@
+# Curvine LTP CI — daily FS-syscall regression lane (isolated: too heavy for PR/nightly fast gate).
+# Wired by curvine .github/workflows/e2e-ltp.yml job `ltp-syscalls`.
+# Measured wall time on rocky9 FUSE: ~3h35m (2026-08-27 full-run validation, 553/559).
+# The mount/mkfs family dominates; consumers must budget >= 5h incl. cluster build.
+ltp:syscalls-cv

@@ -1,0 +1,29 @@
+#DESCRIPTION:Curvine-curated filesystem SEMANTIC suite (fs-cv minus stress)
+# Same as fs-cv but WITHOUT the data-integrity stress block (gf01-30
+# growfiles, rwtest01-05, iogen01). Intended as the always-green CI
+# gate lane; the full fs-cv (with stress) runs in a separate non-
+# blocking lane until the growfiles dirty-read fix lands.
+#DESCRIPTION:Curvine-curated filesystem stress suite (derived from upstream 'fs')
+# Excluded: ftest03/fs_fill/lftest01 (ENOSPC/full-fill loops hang on quota-less distributed FS);
+# quota_remount_test01/isofs/squashfs01 (loop-mount/quota, N/A); proc01/read_all_* (kernel pseudo-FS);
+# binfmt_misc (kernel feature, not FS).
+fs_inod01 fs_inod $TMPDIR 10 10 10
+linker01 linktest.sh
+openfile01 openfile -f10 -t10
+inode01 inode01
+inode02 inode02
+stream01 stream01
+stream02 stream02
+stream03 stream03
+stream04 stream04
+stream05 stream05
+ftest01 ftest01
+ftest02 ftest02
+ftest04 ftest04
+ftest05 ftest05
+ftest06 ftest06
+ftest07 ftest07
+ftest08 ftest08
+writetest01	writetest
+fs_di fs_di -d $TMPDIR
+fs_racer fs_racer.sh -t 5
