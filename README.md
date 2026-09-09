@@ -2,10 +2,12 @@
 
 Testing flow for Curvine, including CVbench, LTP, Xfstest and other customized cases.
 
-## Status (2026-09-01)
+## Status (2026-09-09)
 
-LTP lane is live with the three-lane curated set below; the early `cv-fs`
-smoke file was removed 2026-09-01 (strict subset of `syscalls-cv`).
+The LTP fast gate uses a focused POSIX/filesystem-semantics suite instead of
+upstream LTP's generic `smoketest` or the stress-oriented `fs-cv-smoke`.
+Additional CI lanes will be added only after their contents and trigger policy
+have been validated.
 xfstests and CVbench are planned (see "Roadmap").
 
 ## Layout
@@ -14,7 +16,7 @@ xfstests and CVbench are planned (see "Roadmap").
 cvtest                     # CLI entrypoint (python3, stdlib only)
 suites/<tool>/             # curated suite definitions, one directory per tool
   ltp/runtest/             #   LTP command files (installed into $LTP/runtest)
-    fs-cv / fs-cv-smoke / syscalls-cv / ...
+    posix-cv-smoke / fs-cv / syscalls-cv / ...
   xfstests/                #   (planned) group lists / runner args
   cvbench/                 #   (planned) scenario manifests
 tools/<tool>/              # pinned installers / wrappers (e.g. tools/ltp/install-ltp.sh)
@@ -38,7 +40,7 @@ cvtest run --suite <tool>:<name> --mount <path> [--json out.json]
 | Part | Meaning | Example |
 |------|---------|---------|
 | `tool` | Which harness runs the suite | `ltp`, `xfstests`, `cvbench`, `pjdfstest` |
-| `name` | Tool-specific suite id | LTP: runtest file stem (`fs-cv-smoke`); xfstests: group (`generic/001`) |
+| `name` | Tool-specific suite id | LTP: runtest file stem (`posix-cv-smoke`); xfstests: group (`generic/001`) |
 
 Rules:
 
@@ -58,15 +60,15 @@ remaining fields are normalized so curvine can aggregate runs the same way:
 ```json
 {
   "tool": "ltp",
-  "suite": "fs-cv-smoke",
+  "suite": "posix-cv-smoke",
   "status": "completed",
   "return_code": 0,
   "log_file": "...",
-  "passed_count": 20,
+  "passed_count": 53,
   "failed_count": 0,
-  "total_count": 20,
+  "total_count": 53,
   "success_rate": 100.0,
-  "test_cases": [{"name": "ftest01", "status": "PASSED"}]
+  "test_cases": [{"name": "open01", "status": "PASSED"}]
 }
 ```
 
@@ -101,15 +103,20 @@ LTP 20250930); classification details in the #curvine-tests thread.
 | Suite | Size | Baseline | Notes |
 |-------|------|----------|-------|
 | smoketest | 12 | 12/12 | quick sanity |
+| posix-cv-smoke | 53 | 53/53 on Rocky 9 container + Curvine FUSE | representative Curvine POSIX/filesystem interface families; fast CI gate |
 | fs_perms_simple | 18 | 18/18 | permission matrix (upstream LTP built-in; not vendored here) |
 | fcntl-locktests | 1 | 1/1 | record locks |
 | fs_bind | 95 | 95/95 | bind mounts / rename |
 | fs-cv | 56 | 52/56 | upstream `fs` minus 12 entries (see file header); red: gf20/23/26/29 growfiles data mismatch (known bug, fix in flight) |
 | fs-cv-smoke | 20 | 20/20 | fs-cv minus the stress block (gf01-30, rwtest01-05, iogen01); CI fast-lane gate |
-| syscalls-cv | 557 | 557/557 with LTP_TIMEOUT_MUL=4 | FS-related syscall whitelist; daily regression (~3h35m measured) |
+| syscalls-cv | 557 | 557/557 with LTP_TIMEOUT_MUL=4 | FS-related syscall whitelist; candidate source for a future extended lane (~3h35m measured) |
 
 Curation policy (aligned with JuiceFS's published POSIX-compat approach):
 
+- **posix-cv-smoke**: select one or two known-green cases for each critical
+  filesystem interface family. Exclude tests that target networking, loop
+  devices, mount namespaces, pseudo filesystems, or sustained stress. Add new
+  cases only after validating them on the target Curvine CI environment.
 - **fs-cv**: drop tests that never terminate or don't apply on a quota-less
   distributed FUSE FS (ENOSPC loops, loop mounts, procfs). Unlike JuiceFS we
   KEEP the growfiles/rwtest/iogen pressure tests — they found a real bug.
@@ -130,10 +137,9 @@ Curation policy (aligned with JuiceFS's published POSIX-compat approach):
 #    build/dist + bin/curvine-{master,worker,fuse}.sh; fuse must be
 #    started as root; probe with a touch+read on the mount).
 
-# 3. Run suites (examples from the fast / daily lanes).
-./cvtest run --suite ltp:fs_perms_simple --mount /curvine-fuse --json out1.json
-./cvtest run --suite ltp:fs-cv-smoke     --mount /curvine-fuse --json out2.json
-./cvtest run --suite ltp:syscalls-cv     --mount /curvine-fuse --json out3.json
+# 3. Run the fast gate or a larger suite manually.
+./cvtest run --suite ltp:posix-cv-smoke --mount /curvine-fuse --json out1.json
+./cvtest run --suite ltp:syscalls-cv    --mount /curvine-fuse --json out2.json
 ```
 
 Exit code: 0 = all tests passed AND runltp rc 0; 1 = failures; 2 = usage/env error.
@@ -151,22 +157,27 @@ harnesses land).
 |------|---------|-----|
 | LTP  | 20250930 | newest release verified green on Curvine that still ships `runltp`; 20260529+ removed runltp in favor of kirk |
 
-## CI lanes (curvine `e2e-ltp.yml`)
+## CI lanes (Curvine workflows)
 
-Manifest files under `suites/ci-*.txt` document which `tool:suite` names each lane runs.
+Manifest files under `suites/ci-*.txt` document which `tool:suite` names each
+validated lane runs. Currently only the fast gate is defined.
 
 | Lane | Manifest | Trigger | ~wall time (FUSE) |
 |------|----------|---------|-------------------|
-| **fast** | `ci-fast.txt` | nightly 18:00 UTC, PR label `run-ltp` | **15–25 min** (146 cases) |
-| **syscalls** | `ci-daily-syscalls.txt` | daily 02:00 UTC, dispatch `lane=syscalls` | **~3h35m measured** (557 cases; the mount/mkfs family dominates — budget >=5h incl. build; measured 2026-08-27, log /tmp/cv-suites-syscalls-cv.log) |
-| **pressure** | `ci-pressure.txt` | PR label `run-ltp-pressure` | **20–40 min** (56 cases; growfiles reds expected until fix lands) |
+| **fast** | `ci-fast.txt` | pull-request build | 53 selected cases; ~15s test execution locally (cluster startup excluded) |
 
-Fast lane deliberately **excludes** `syscalls-cv` (too heavy) and **full** `fs-cv` (known growfiles reds). Pin cvtest at `feat/cv-suites-2026-08-26` until review merges.
+Fast lane deliberately excludes generic `smoketest` (non-filesystem cases and
+environment dependencies), `fs-cv-smoke` (known `ftest` failures), full
+`syscalls-cv` (too slow), and full `fs-cv` (known growfiles failures).
+The latter suites remain available as curation inputs and for manual runs, but
+they are not advertised as supported CI lanes. Add a new `ci-*.txt` only after
+the selected cases pass in the target environment and the lane's trigger,
+runtime budget, and failure policy are explicit.
 
 ## Roadmap
 
 1. LTP: installer, curated suites, cvtest run entry (done 2026-08-25; obsolete `cv-fs` removed 2026-09-01)
-2. curvine CI: `e2e-ltp.yml` three-lane workflow (done 2026-08-27; NOT a PR gate until privileged FUSE proves stable on hosted runners)
+2. Curvine CI: wire the pull-request build to the validated `ci-fast.txt` manifest
 3. xfstests: pick runnable groups from Curvine's POSIX support matrix, add per-group command files
 4. CVbench / fio performance lane on the same runner contract
 5. kirk migration for LTP >= 20260529 (runltp removed upstream)
