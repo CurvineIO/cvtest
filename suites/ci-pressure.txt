@@ -1,3 +1,0 @@
-# Curvine LTP CI — optional pressure lane (growfiles/rwtest; known reds until growfiles fix).
-# Wired by curvine .github/workflows/e2e-ltp.yml job `ltp-pressure` (label run-ltp-pressure).
-ltp:fs-cv

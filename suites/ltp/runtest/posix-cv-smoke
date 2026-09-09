@@ -1,0 +1,85 @@
+# Curvine fast POSIX/filesystem semantics gate.
+#
+# Policy:
+# - one or two representative tests per interface family;
+# - every entry is selected from the validated syscalls-cv green baseline;
+# - no network, loop-device, mount-namespace, pseudo-filesystem, or stress tests;
+# - tests run below the Curvine mount supplied through runltp -d.
+#
+# Keep this suite intentionally small. Add coverage incrementally only after a
+# candidate is green in the target Curvine CI environment.
+
+# Access and ownership
+access01 access01
+chmod01 chmod01
+fchmod01 fchmod01
+chown01 chown01
+fchown01 fchown01
+
+# File lifecycle and descriptors
+creat01 creat01
+open01 open01
+openat01 openat01
+close01 close01
+dup01 dup01
+unlink05 unlink05
+unlinkat01 unlinkat01
+
+# Data I/O and file size
+read01 read01
+write01 write01
+pread01 pread01
+pwrite01 pwrite01
+readv01 readv01
+writev01 writev01
+lseek01 lseek01
+truncate02 truncate02
+ftruncate01 ftruncate01
+
+# Directories and path handling
+mkdir02 mkdir02
+mkdirat01 mkdirat01
+rmdir01 rmdir01
+getcwd01 getcwd01
+
+# Metadata
+stat01 stat01
+fstat02 fstat02
+lstat01 lstat01
+statfs02 statfs02
+statx01 statx01
+
+# Links and rename
+link02 link02
+linkat01 linkat01
+symlink02 symlink02
+symlinkat01 symlinkat01
+readlink01 readlink01
+rename14 rename14
+renameat201 renameat201
+
+# Timestamps
+utime06 utime06
+utime07 utime07
+utimes01 utimes01
+
+# Locking
+fcntl01 fcntl01
+flock01 flock01
+
+# Mapping and durability
+mmap01 mmap01
+msync01 msync01
+fdatasync01 fdatasync01
+fsync02 fsync02
+
+# Extended attributes
+setxattr02 setxattr02
+getxattr01 getxattr01
+listxattr01 listxattr01
+removexattr01 removexattr01
+
+# In-kernel file data paths
+copy_file_range03 copy_file_range03
+sendfile02 sendfile02
+splice01 splice01
